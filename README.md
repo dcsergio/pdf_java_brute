@@ -34,7 +34,7 @@ gradle clean build
 # The JAR file will be created in build/libs/
 ```
 
-Note: a gradle wrapper are supplied, too.
+Note: gradle wrappers are supplied, too.
 For Windows: `gradlew.bat clean install`
 For Linux/Mac: `./gradlew clean install`
 
