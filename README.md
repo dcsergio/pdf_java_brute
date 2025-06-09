@@ -1,4 +1,4 @@
-# PDF Password Cracker User Guide
+# PDF Brute-force Password Cracker User Guide
 
 ## Prerequisites
 - Java 21 or later versions (JDK required for compilation)
