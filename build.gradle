@@ -22,7 +22,7 @@ test {
 jar {
     manifest {
         attributes(
-                'Main-Class': 'it.sdc.pdfbruteforce.App'
+                'Main-Class': 'it.sdc.pdfbrute.App'
         )
     }
 

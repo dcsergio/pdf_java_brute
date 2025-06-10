@@ -11,12 +11,14 @@ import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class App {
 
     static final long SCRAMBLE_SEED = 42;
-    static volatile long attempts = 0;
+    static final int WARMUP_ATTEMPTS = 1000;
     static volatile boolean found = false;
+    static AtomicLong attemptCounter = new AtomicLong(0);
 
     public static void main(String[] args) {
         boolean enableScrambling = true;
@@ -67,7 +69,8 @@ public class App {
 
         if (inputPath == null || outputPath == null) {
             System.err.printf("Usage: java -jar app.jar --input <file.pdf> --output <output.pdf> " +
-                    "[--prefixfile prefix.txt] [--suffixfile suffix.txt] [--min 1] [--max 5] [--chars abc123] [--threads %d]%n", numThreads);
+                            "[--prefixfile prefix.txt] [--suffixfile suffix.txt] [--min %d] [--max %d] [--chars %s] [--threads %d]%n",
+                    minLen, maxLen, new String(allowedChars), numThreads);
             return;
         }
 
@@ -75,10 +78,52 @@ public class App {
         List<String> prefixes = loadFile(prefixFile);
         List<String> suffixes = loadFile(suffixFile);
 
+        // Calculate total combinations
+        long totalCombinations = calculateTotalCombinations(prefixes, suffixes, minLen, maxLen, scrambledChars.length);
+
+        System.out.println("=== PDF Brute Force Attack ===");
+        System.out.println("Input file: " + inputPath);
+        System.out.println("Output file: " + outputPath);
+        System.out.println("Password length range: " + minLen + "-" + maxLen);
+        System.out.println("Character set: " + new String(scrambledChars));
+        System.out.println("Threads: " + numThreads);
+        System.out.println("Total combinations to try: " + String.format("%,d", totalCombinations));
+        System.out.println();
+
+        // Perform warm-up test
+        System.out.println("Performing warm-up test with " + WARMUP_ATTEMPTS + " attempts...");
+        double avgTimePerAttempt = performWarmup(inputPath, scrambledChars, prefixes, suffixes, minLen);
+
+        if (avgTimePerAttempt < 0) {
+            System.err.println("Warm-up failed. Cannot proceed.");
+            return;
+        }
+
+        // Calculate time estimates
+        double worstCaseSeconds = totalCombinations * avgTimePerAttempt;
+        double estimatedSeconds = worstCaseSeconds / 2.0; // Average case (50% of worst case)
+
+        System.out.printf("Average time per attempt: %.3f ms%n", avgTimePerAttempt * 1000);
+        System.out.println("Time estimates:");
+        System.out.println("  Worst case: " + formatTime(worstCaseSeconds));
+        System.out.println("  Estimated (average): " + formatTime(estimatedSeconds));
+        System.out.println();
+
+        // Ask user for confirmation
+        if (!getUserConfirmation()) {
+            System.out.println("Operation cancelled by user.");
+            return;
+        }
+
+        // Proceed with actual brute force attack
+        System.out.println("Starting brute force attack...");
         long start = System.currentTimeMillis();
+
         try (ExecutorService executor = Executors.newFixedThreadPool(numThreads)) {
             for (String prefix : prefixes) {
+                System.out.println("prefix: " + prefix);
                 for (String suffix : suffixes) {
+                    System.out.println("suffix: " + suffix);
                     for (int len = minLen; len <= maxLen; len++) {
                         int bodyLength = len;
                         for (char c : scrambledChars) {
@@ -98,7 +143,104 @@ public class App {
         }
 
         if (!found) {
-            System.out.println("Password not found.");
+            System.out.println("Password not found after trying all combinations.");
+        }
+    }
+
+    public static double performWarmup(String inputPath, char[] allowedChars,
+                                       List<String> prefixes, List<String> suffixes, int minLen) {
+        System.out.println("Generating warm-up passwords...");
+        List<String> warmupPasswords = generateWarmupPasswords(allowedChars, prefixes, suffixes, minLen, WARMUP_ATTEMPTS);
+
+        System.out.println("Testing " + warmupPasswords.size() + " passwords...");
+        long startTime = System.nanoTime();
+
+        for (String password : warmupPasswords) {
+            if (tryPasswordWarmup(inputPath, password)) {
+                System.out.println("Password found during warm-up: " + password);
+                found = true;
+                return -1; // Password found, no need to continue
+            }
+        }
+
+        long endTime = System.nanoTime();
+        double totalTimeSeconds = (endTime - startTime) / 1_000_000_000.0;
+        double avgTimePerAttempt = totalTimeSeconds / warmupPasswords.size();
+
+        System.out.printf("Warm-up completed: %d attempts in %.2f seconds%n", warmupPasswords.size(), totalTimeSeconds);
+
+        return avgTimePerAttempt;
+    }
+
+    public static List<String> generateWarmupPasswords(char[] allowedChars, List<String> prefixes,
+                                                       List<String> suffixes, int minLen, int maxAttempts) {
+        List<String> passwords = new ArrayList<>();
+        Random random = new Random(SCRAMBLE_SEED);
+
+        while (passwords.size() < maxAttempts) {
+            String prefix = prefixes.get(random.nextInt(prefixes.size()));
+            String suffix = suffixes.get(random.nextInt(suffixes.size()));
+
+            // Random length between minLen and a reasonable upper bound
+            int length = minLen + random.nextInt(Math.min(3, 8 - minLen));
+
+            StringBuilder body = new StringBuilder();
+            for (int i = 0; i < length; i++) {
+                body.append(allowedChars[random.nextInt(allowedChars.length)]);
+            }
+
+            passwords.add(prefix + body.toString() + suffix);
+        }
+
+        return passwords;
+    }
+
+    public static boolean tryPasswordWarmup(String inputPath, String password) {
+        try (PDDocument document = PDDocument.load(new File(inputPath), password)) {
+            return true; // Password is correct
+        } catch (InvalidPasswordException e) {
+            return false; // Wrong password
+        } catch (Exception e) {
+            return false; // Other error
+        }
+    }
+
+    public static long calculateTotalCombinations(List<String> prefixes, List<String> suffixes,
+                                                  int minLen, int maxLen, int charsetSize) {
+        long total = 0;
+        for (int len = minLen; len <= maxLen; len++) {
+            total += (long) Math.pow(charsetSize, len);
+        }
+        return total * prefixes.size() * suffixes.size();
+    }
+
+    public static String formatTime(double seconds) {
+        if (seconds < 60) {
+            return String.format("%.1f seconds", seconds);
+        } else if (seconds < 3600) {
+            return String.format("%.1f minutes", seconds / 60);
+        } else if (seconds < 86400) {
+            return String.format("%.1f hours", seconds / 3600);
+        } else if (seconds < 31536000) {
+            return String.format("%.1f days", seconds / 86400);
+        } else {
+            return String.format("%.1f years", seconds / 31536000);
+        }
+    }
+
+    public static boolean getUserConfirmation() {
+        Scanner scanner = new Scanner(System.in);
+        while (true) {
+            System.out.print("Do you want to proceed with the brute force attack? (y/n): ");
+            String input = scanner.nextLine().trim().toLowerCase();
+
+            if (input.equals("y") || input.equals("yes")) {
+                return true;
+            } else if (input.equals("n") || input.equals("no")) {
+                return false;
+            } else {
+                System.out.println("Please enter 'y' or 'n'.");
+            }
         }
     }
 
@@ -106,6 +248,7 @@ public class App {
         if (filePath == null) return List.of("");
         try {
             List<String> lines = Files.readAllLines(Paths.get(filePath), StandardCharsets.UTF_8);
+            lines.forEach(line -> System.out.println("line: " + line));
             return lines.isEmpty() ? List.of("") : lines;
         } catch (IOException e) {
             System.err.println("Error reading file: " + e.getMessage());
@@ -126,11 +269,15 @@ public class App {
             }
         } else {
             String attempt = prefix + new String(body) + suffix;
-            long localAttempts = ++attempts;
-            if (localAttempts % 5000 == 0) {
+            long currentAttempts = attemptCounter.incrementAndGet();
+
+            // Show progress every 10000 attempts
+            if (currentAttempts % 10000 == 0) {
                 double elapsed = (System.currentTimeMillis() - start) / 1000.0;
-                System.out.printf("Attempts: %d, Elapsed time: %.2f seconds, Attempt: %s%n", localAttempts, elapsed, attempt);
+                System.out.printf("Attempts: %,d | Time elapsed: %.1f seconds%n", currentAttempts, elapsed);
+                System.out.println("pw: " + attempt);
             }
+
             if (tryPassword(inputPath, outputPath, attempt, start)) {
                 found = true;
             }
@@ -153,10 +300,12 @@ public class App {
             document.setAllSecurityToBeRemoved(true);
             document.save(outputPath);
             double elapsed = (System.currentTimeMillis() - start) / 1000.0;
+            long totalAttempts = attemptCounter.get();
+            System.out.println("\n=== SUCCESS ===");
             System.out.println("PDF decrypted successfully!");
             System.out.println("Password: " + password);
+            System.out.printf("Total attempts: %,d%n", totalAttempts);
             System.out.printf("Time taken: %.2f seconds%n", elapsed);
-            System.out.println("Total attempts: " + attempts);
             return true;
         } catch (InvalidPasswordException e) {
             return false;
